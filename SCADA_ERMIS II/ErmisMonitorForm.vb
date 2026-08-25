@@ -2,6 +2,7 @@
 Imports System.IO.Ports
 Imports System.Text
 Imports System.Threading
+Imports ErmisSensorStatusTool
 
 Partial Public Class ErmisMonitorForm
     Inherits Form
@@ -21,7 +22,6 @@ Partial Public Class ErmisMonitorForm
     Private ReadOnly _rateTimer As Stopwatch = Stopwatch.StartNew()
     Private _rateBytes As Long
     Private _receiveKbps As Double
-
     Public Sub New()
         InitializeComponent()
     End Sub
@@ -30,8 +30,12 @@ Partial Public Class ErmisMonitorForm
         sender As Object,
         e As EventArgs) Handles MyBase.Load
 
+
+
         RefreshPorts()
         AppendConsole("ERMIS II Compact LoRa monitor έτοιμο.")
+
+
 
     End Sub
 
@@ -393,7 +397,7 @@ Partial Public Class ErmisMonitorForm
 
         Press1.Text = If(hasBmp, (r.BmpPressurePa / 100.0F).ToString("F2") & " hPa", "-- hPa")
         Press2.Text = If(hasBmp, r.BmpAltitude.ToString("F0") & " m", "-- m")
-        Press3.Text = "1013.25 hPa"
+        Press3.Visible = False
 
         Pm1.Text = If(hasSen, r.SenPm1.ToString("F1") & " µg/m³", "-- µg/m³")
         Pm25.Text = If(hasSen, r.SenPm25.ToString("F1") & " µg/m³", "-- µg/m³")
@@ -426,6 +430,38 @@ Partial Public Class ErmisMonitorForm
             X.ForeColor = Color.FromArgb(185, 62, 62)
             Y.ForeColor = Color.FromArgb(105, 119, 133)
             Z.ForeColor = Color.FromArgb(105, 119, 133)
+        End If
+
+
+        If _statusTool IsNot Nothing Then
+
+            _statusTool.Sen66.State =
+                If(hasSen, SensorState.Online, SensorState.Offline)
+
+            _statusTool.Bmp280.State =
+                If(hasBmp, SensorState.Online, SensorState.Offline)
+
+            _statusTool.Sht21.State =
+                If(hasSht, SensorState.Online, SensorState.Offline)
+
+            If hasGps Then
+                _statusTool.Gps.State = SensorState.Online
+                _statusTool.Gps.Description =
+                    "FIX · SAT " & r.GpsSatellites.ToString()
+
+                _statusTool.Esp32P4.State = SensorState.Online
+                _statusTool.Esp32P4.Description =
+                    "GPS telemetry received"
+            Else
+                _statusTool.Gps.State = SensorState.Warning
+                _statusTool.Gps.Description =
+                    "Waiting for valid fix"
+
+                _statusTool.Esp32P4.State = SensorState.Warning
+                _statusTool.Esp32P4.Description =
+                    "No GPS telemetry"
+            End If
+
         End If
 
     End Sub
@@ -526,6 +562,19 @@ Partial Public Class ErmisMonitorForm
             connectButton.BackColor = Color.FromArgb(0, 122, 204)
         End If
 
+
+        If _statusTool IsNot Nothing Then
+            If value Then
+                _statusTool.LoraLink.State = SensorState.Online
+                _statusTool.LoraLink.Description =
+                    "Serial Modbus link active"
+            Else
+                _statusTool.LoraLink.State = SensorState.Offline
+                _statusTool.LoraLink.Description =
+                    "No ground station link"
+            End If
+        End If
+
     End Sub
 
     Private Sub AppendConsole(message As String)
@@ -600,6 +649,10 @@ Partial Public Class ErmisMonitorForm
     End Sub
 
     Private Sub CheckBox1_CheckedChanged(sender As Object, e As EventArgs)
+
+    End Sub
+
+    Private Sub _statusTool_Load(sender As Object, e As EventArgs) Handles _statusTool.Load
 
     End Sub
 End Class

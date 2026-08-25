@@ -805,28 +805,17 @@ Friend NotInheritable Class RobustModbusRtuMaster
     End Sub
 
     Private Shared Sub WaitWithCancellation(
-       milliseconds As Integer,
-    cancellationToken As CancellationToken)
+        milliseconds As Integer,
+        cancellationToken As CancellationToken)
 
-        Try
-            If milliseconds <= 0 Then
-                Return
-            End If
-
-            If cancellationToken.WaitHandle.WaitOne(milliseconds) Then
-                cancellationToken.ThrowIfCancellationRequested()
-            End If
-
-        Catch ex As OperationCanceledException
-            ' Κανονικό cancellation - δεν θεωρείται σφάλμα
+        If milliseconds <= 0 Then
             Return
+        End If
 
-        Catch ex As Exception
-            ' Προαιρετικά γράψε εδώ log
-            Debug.WriteLine(
-            "SafeDelay error: " & ex.Message
-        )
-        End Try
+        If cancellationToken.WaitHandle.WaitOne(milliseconds) Then
+            cancellationToken.ThrowIfCancellationRequested()
+        End If
+
     End Sub
 
     Private Shared Function U16PairToI32(high As UShort, low As UShort) As Integer
