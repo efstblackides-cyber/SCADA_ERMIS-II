@@ -1,4 +1,4 @@
-Option Explicit On
+﻿Option Explicit On
 Option Strict On
 Option Infer On
 
@@ -12,7 +12,8 @@ Friend NotInheritable Class RobustModbusRtuMaster
     Implements IDisposable
 
     Private Const CompactBatchFunction As Byte = &H42
-    Private Const ProtocolVersion As Byte = 1
+    Private Const ProtocolVersionV1 As Byte = 1
+    Private Const ProtocolVersionV2 As Byte = 2
     Private Const MaxBatchRecords As Integer = 10
 
     Private Const MaxAttempts As Integer = 3
@@ -278,9 +279,13 @@ Friend NotInheritable Class RobustModbusRtuMaster
             Throw New IOException("Πολύ μικρό compact frame.")
         End If
 
-        If frame(2) <> ProtocolVersion Then
+        Dim protocolVersion As Byte = frame(2)
+
+        If protocolVersion <> ProtocolVersionV1 AndAlso
+           protocolVersion <> ProtocolVersionV2 Then
+
             Throw New IOException(
-                "Άγνωστη έκδοση compact protocol: " & frame(2).ToString())
+                "Άγνωστη έκδοση compact protocol: " & protocolVersion.ToString())
         End If
 
         Dim count As Integer = CInt(frame(3))
@@ -303,8 +308,9 @@ Friend NotInheritable Class RobustModbusRtuMaster
             Return result
         End If
 
+        Dim valueCount As Integer = If(protocolVersion = ProtocolVersionV2, 22, 15)
         Dim offset As Integer = 26
-        Dim previous(14) As UShort
+        Dim previous(valueCount - 1) As UShort
 
         For recordIndex As Integer = 0 To count - 1
 
@@ -312,31 +318,38 @@ Friend NotInheritable Class RobustModbusRtuMaster
             Dim timeDeltaMs As UShort = GetU16(frame, offset)
             offset += 2
 
-            Dim values(14) As UShort
+            Dim values(valueCount - 1) As UShort
 
             If recordIndex = 0 Then
 
-                EnsureAvailable(frame, offset, 30)
+                EnsureAvailable(frame, offset, valueCount * 2)
 
-                For i As Integer = 0 To 14
+                For i As Integer = 0 To valueCount - 1
                     values(i) = GetU16(frame, offset)
                     offset += 2
                 Next
 
             Else
 
-                EnsureAvailable(frame, offset, 2)
+                Dim changeMask As UInteger
 
-                Dim changeMask As UShort = GetU16(frame, offset)
-                offset += 2
+                If protocolVersion = ProtocolVersionV2 Then
+                    EnsureAvailable(frame, offset, 4)
+                    changeMask = GetU32(frame, offset)
+                    offset += 4
+                Else
+                    EnsureAvailable(frame, offset, 2)
+                    changeMask = GetU16(frame, offset)
+                    offset += 2
+                End If
 
                 Array.Copy(previous, values, previous.Length)
 
-                For i As Integer = 0 To 14
+                For i As Integer = 0 To valueCount - 1
 
-                    Dim bit As Integer = 1 << i
+                    Dim bit As UInteger = 1UI << i
 
-                    If (CInt(changeMask) And bit) = 0 Then
+                    If (changeMask And bit) = 0UI Then
                         Continue For
                     End If
 
@@ -379,12 +392,8 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
             Dim r As New TelemetryRecord()
 
-            r.Sequence =
-                result.FirstSequence + CUInt(recordIndex)
-
-            r.TimestampMs =
-                result.BaseTimestampMs + CULng(timeDeltaMs)
-
+            r.Sequence = result.FirstSequence + CUInt(recordIndex)
+            r.TimestampMs = result.BaseTimestampMs + CULng(timeDeltaMs)
             r.DeviceStatus = result.DeviceStatus
             r.FifoCount = result.FifoCount
             r.FifoCapacity = result.FifoCapacity
@@ -410,8 +419,18 @@ Friend NotInheritable Class RobustModbusRtuMaster
             r.ShtTemperature = CSng(U16ToI16(values(13))) / 100.0F
             r.ShtHumidity = CSng(values(14)) / 100.0F
 
-            result.Records.Add(r)
+            If protocolVersion = ProtocolVersionV2 Then
+                Dim latRaw As Integer = U16PairToI32(values(15), values(16))
+                Dim lonRaw As Integer = U16PairToI32(values(17), values(18))
+                Dim altRaw As Integer = U16PairToI32(values(19), values(20))
 
+                r.GpsLatitude = CDbl(latRaw) / 10000000.0R
+                r.GpsLongitude = CDbl(lonRaw) / 10000000.0R
+                r.GpsAltitudeM = CSng(altRaw) / 100.0F
+                r.GpsSatellites = values(21)
+            End If
+
+            result.Records.Add(r)
             Array.Copy(values, previous, values.Length)
 
         Next
@@ -466,7 +485,11 @@ Friend NotInheritable Class RobustModbusRtuMaster
                 Exit While
             End If
 
-            If received(start + 2) <> ProtocolVersion Then
+            Dim protocolVersion As Byte = received(start + 2)
+
+            If protocolVersion <> ProtocolVersionV1 AndAlso
+               protocolVersion <> ProtocolVersionV2 Then
+
                 start += 1
                 Continue While
             End If
@@ -478,37 +501,48 @@ Friend NotInheritable Class RobustModbusRtuMaster
                 Continue While
             End If
 
+            Dim valueCount As Integer = If(protocolVersion = ProtocolVersionV2, 22, 15)
+            Dim maskBytes As Integer = If(protocolVersion = ProtocolVersionV2, 4, 2)
             Dim pos As Integer = start + 26
             Dim complete As Boolean = True
 
             If count > 0 Then
 
-                If received.Count < pos + 32 Then
+                Dim firstRecordBytes As Integer = 2 + valueCount * 2
+
+                If received.Count < pos + firstRecordBytes Then
                     complete = False
                 Else
-                    ' record 0: 2-byte time delta + 30 bytes values
-                    pos += 32
+                    pos += firstRecordBytes
 
                     For recordIndex As Integer = 1 To count - 1
 
-                        If received.Count < pos + 4 Then
+                        If received.Count < pos + 2 + maskBytes Then
                             complete = False
                             Exit For
                         End If
 
-                        ' time delta
-                        pos += 2
+                        pos += 2 ' time delta
 
-                        Dim mask As UShort =
-                            CUShort(
+                        Dim mask As UInteger
+
+                        If protocolVersion = ProtocolVersionV2 Then
+                            mask =
+                                (CUInt(received(pos)) << 24) Or
+                                (CUInt(received(pos + 1)) << 16) Or
+                                (CUInt(received(pos + 2)) << 8) Or
+                                CUInt(received(pos + 3))
+                            pos += 4
+                        Else
+                            mask =
                                 (CUInt(received(pos)) << 8) Or
-                                CUInt(received(pos + 1)))
+                                CUInt(received(pos + 1))
+                            pos += 2
+                        End If
 
-                        pos += 2
+                        For i As Integer = 0 To valueCount - 1
 
-                        For i As Integer = 0 To 14
-
-                            If (CInt(mask) And (1 << i)) = 0 Then
+                            If (mask And (1UI << i)) = 0UI Then
                                 Continue For
                             End If
 
@@ -771,18 +805,42 @@ Friend NotInheritable Class RobustModbusRtuMaster
     End Sub
 
     Private Shared Sub WaitWithCancellation(
-        milliseconds As Integer,
-        cancellationToken As CancellationToken)
+       milliseconds As Integer,
+    cancellationToken As CancellationToken)
 
-        If milliseconds <= 0 Then
+        Try
+            If milliseconds <= 0 Then
+                Return
+            End If
+
+            If cancellationToken.WaitHandle.WaitOne(milliseconds) Then
+                cancellationToken.ThrowIfCancellationRequested()
+            End If
+
+        Catch ex As OperationCanceledException
+            ' Κανονικό cancellation - δεν θεωρείται σφάλμα
             Return
-        End If
 
-        If cancellationToken.WaitHandle.WaitOne(milliseconds) Then
-            cancellationToken.ThrowIfCancellationRequested()
-        End If
-
+        Catch ex As Exception
+            ' Προαιρετικά γράψε εδώ log
+            Debug.WriteLine(
+            "SafeDelay error: " & ex.Message
+        )
+        End Try
     End Sub
+
+    Private Shared Function U16PairToI32(high As UShort, low As UShort) As Integer
+
+        Dim raw As UInteger =
+            (CUInt(high) << 16) Or CUInt(low)
+
+        If raw <= &H7FFFFFFFUI Then
+            Return CInt(raw)
+        End If
+
+        Return CInt(CLng(raw) - 4294967296L)
+
+    End Function
 
     Private Shared Sub AppendCrc(frame As Byte())
 

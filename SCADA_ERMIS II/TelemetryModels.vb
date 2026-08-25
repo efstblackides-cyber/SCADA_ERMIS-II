@@ -1,4 +1,4 @@
-Option Explicit On
+﻿Option Explicit On
 Option Strict On
 Option Infer On
 
@@ -42,6 +42,12 @@ Public NotInheritable Class TelemetryRecord
 
     Public Property ShtTemperature As Single
     Public Property ShtHumidity As Single
+
+    ' GPS values carried by compact protocol v2
+    Public Property GpsLatitude As Double
+    Public Property GpsLongitude As Double
+    Public Property GpsAltitudeM As Single
+    Public Property GpsSatellites As UShort
 
 End Class
 

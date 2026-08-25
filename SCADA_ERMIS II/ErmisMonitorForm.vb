@@ -1,4 +1,4 @@
-Imports System.Diagnostics
+﻿Imports System.Diagnostics
 Imports System.IO.Ports
 Imports System.Text
 Imports System.Threading
@@ -288,6 +288,8 @@ Partial Public Class ErmisMonitorForm
 
     Private Sub ShowRecord(r As TelemetryRecord)
 
+        UpdateDashboard(r)
+
         Dim sb As New StringBuilder()
 
         sb.AppendLine()
@@ -359,7 +361,72 @@ Partial Public Class ErmisMonitorForm
 
         End If
 
+        If (r.ValidFlags And ValidFlags.Gps) = ValidFlags.Gps Then
+            sb.AppendLine(
+                "GPS Lat=" & r.GpsLatitude.ToString("F7") &
+                " Lon=" & r.GpsLongitude.ToString("F7") &
+                " Alt=" & r.GpsAltitudeM.ToString("F1") &
+                " m Sat=" & r.GpsSatellites.ToString())
+        End If
+
         AppendConsole(sb.ToString().TrimEnd())
+
+    End Sub
+
+    Private Sub UpdateDashboard(r As TelemetryRecord)
+
+        Dim hasSen As Boolean =
+            (r.ValidFlags And ValidFlags.Sen66) = ValidFlags.Sen66
+
+        Dim hasBmp As Boolean =
+            (r.ValidFlags And ValidFlags.Bmp280) = ValidFlags.Bmp280
+
+        Dim hasSht As Boolean =
+            (r.ValidFlags And ValidFlags.Sht21) = ValidFlags.Sht21
+
+        Dim hasGps As Boolean =
+            (r.ValidFlags And ValidFlags.Gps) = ValidFlags.Gps
+
+        Temp1.Text = If(hasSen, r.SenTemperature.ToString("F2") & " °C", "-- °C")
+        Temp2.Text = If(hasBmp, r.BmpTemperature.ToString("F2") & " °C", "-- °C")
+        Temp3.Text = If(hasSht, r.ShtTemperature.ToString("F2") & " °C", "-- °C")
+
+        Press1.Text = If(hasBmp, (r.BmpPressurePa / 100.0F).ToString("F2") & " hPa", "-- hPa")
+        Press2.Text = If(hasBmp, r.BmpAltitude.ToString("F0") & " m", "-- m")
+        Press3.Text = "1013.25 hPa"
+
+        Pm1.Text = If(hasSen, r.SenPm1.ToString("F1") & " µg/m³", "-- µg/m³")
+        Pm25.Text = If(hasSen, r.SenPm25.ToString("F1") & " µg/m³", "-- µg/m³")
+        Pm5.Text = If(hasSen, r.SenPm4.ToString("F1") & " µg/m³", "-- µg/m³")
+        Pm10.Text = If(hasSen, r.SenPm10.ToString("F1") & " µg/m³", "-- µg/m³")
+
+        Label2.Text = If(hasSen, r.SenCo2.ToString() & " ppm", "-- ppm")
+        VOC.Text = If(hasSen, r.SenVoc.ToString("F1"), "--")
+
+        If hasSen Then
+            RH.Text = r.SenHumidity.ToString("F2") & " %RH"
+        ElseIf hasSht Then
+            RH.Text = r.ShtHumidity.ToString("F2") & " %RH"
+        Else
+            RH.Text = "-- %RH"
+        End If
+
+        If hasGps Then
+            X.Text = r.GpsLatitude.ToString("F7") & " °"
+            Y.Text = r.GpsLongitude.ToString("F7") & " °"
+            Z.Text = r.GpsAltitudeM.ToString("F1") & " m  ·  SAT " &
+                     r.GpsSatellites.ToString()
+            X.ForeColor = Color.FromArgb(0, 142, 90)
+            Y.ForeColor = Color.FromArgb(0, 142, 90)
+            Z.ForeColor = Color.FromArgb(0, 142, 90)
+        Else
+            X.Text = "NO FIX"
+            Y.Text = "--"
+            Z.Text = "--"
+            X.ForeColor = Color.FromArgb(185, 62, 62)
+            Y.ForeColor = Color.FromArgb(105, 119, 133)
+            Z.ForeColor = Color.FromArgb(105, 119, 133)
+        End If
 
     End Sub
 
@@ -448,8 +515,15 @@ Partial Public Class ErmisMonitorForm
         baudBox.Enabled = Not value
         slaveBox.Enabled = Not value
 
-        If Not value Then
-            statusLabel.Text = "Αποσυνδεδεμένο"
+        If value Then
+            statusDot.BackColor = Color.FromArgb(0, 176, 117)
+            statusLabel.ForeColor = Color.FromArgb(0, 122, 81)
+            connectButton.BackColor = Color.FromArgb(204, 67, 67)
+        Else
+            statusLabel.Text = "OFFLINE"
+            statusDot.BackColor = Color.FromArgb(145, 155, 165)
+            statusLabel.ForeColor = Color.FromArgb(69, 82, 95)
+            connectButton.BackColor = Color.FromArgb(0, 122, 204)
         End If
 
     End Sub
