@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -13,7 +14,7 @@ namespace ErmisSensorStatusTool
         public SensorStatusItem()
         {
             DoubleBuffered = true;
-            Height = 50;
+            Height = 44;
             MinimumSize = new Size(240, 50);
             Margin = new Padding(0, 0, 0, 5);
             Font = new Font("Segoe UI", 9F, FontStyle.Regular);
@@ -22,6 +23,9 @@ namespace ErmisSensorStatusTool
             Cursor = Cursors.Default;
         }
 
+        [Category("ERMIS")]
+        [DefaultValue("SENSOR")]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public string SensorName
         {
             get => _sensorName;
@@ -32,6 +36,9 @@ namespace ErmisSensorStatusTool
             }
         }
 
+        [Category("ERMIS")]
+        [DefaultValue("Waiting for data")]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public string Description
         {
             get => _description;
@@ -42,6 +49,9 @@ namespace ErmisSensorStatusTool
             }
         }
 
+        [Category("ERMIS")]
+        [DefaultValue(SensorState.Offline)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public SensorState State
         {
             get => _state;
@@ -140,7 +150,7 @@ namespace ErmisSensorStatusTool
                 statusBrush,
                 new PointF(
                     Width - statusSize.Width - 18,
-                    17));
+                    14));
         }
 
         private static GraphicsPath RoundedRectangle(

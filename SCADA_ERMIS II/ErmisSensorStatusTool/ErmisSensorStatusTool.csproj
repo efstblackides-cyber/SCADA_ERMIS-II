@@ -7,4 +7,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+
+  <ItemGroup>
+    <Compile Update="SensorStatusPanel.Designer.cs">
+      <DependentUpon>SensorStatusPanel.cs</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
 </Project>

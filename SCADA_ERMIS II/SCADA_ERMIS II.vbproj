@@ -14,6 +14,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="ErmisFileRecorder.vb.vb" />
+    <Compile Include="MissionControlProtocol.vb" />
+    <Compile Include="MissionControlClient.vb" />
+    <Compile Include="LiveSpectrogramControl.vb" />
     <Compile Include="ErmisMonitorForm.vb" />
     <Compile Include="ErmisMonitorForm.Designer.vb">
       <DependentUpon>ErmisMonitorForm.vb</DependentUpon>

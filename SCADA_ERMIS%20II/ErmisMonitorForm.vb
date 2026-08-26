@@ -28,10 +28,6 @@ Partial Public Class ErmisMonitorForm
     Private _lastSpectrumFrame As UInteger = 0UI
     Private _spectrumRxCounter As UInteger = 0UI
 
-    ' Spectrum is low-priority traffic. Telemetry keeps the old link behavior.
-    Private Const SpectrumReadIntervalMs As Integer = 700
-    Private _lastSpectrumReadTime As DateTime = DateTime.MinValue
-
     Private _closingAfterDisconnect As Boolean = False
 
     Private ReadOnly _rateTimer As Stopwatch = Stopwatch.StartNew()
@@ -127,7 +123,6 @@ Partial Public Class ErmisMonitorForm
             _spectrogramRequested = False
             _lastSpectrumFrame = 0UI
             _spectrumRxCounter = 0UI
-            _lastSpectrumReadTime = DateTime.MinValue
             liveSpectrogram.ClearSpectrogram()
             spectrumStatusLabel.Text = "SPECTRUM STOPPED"
 
@@ -191,58 +186,13 @@ Partial Public Class ErmisMonitorForm
                 End If
 
                 Dim batch As TelemetryBatchResponse =
-                    Nothing
-
-                Dim telemetryError As String =
-                    ""
-
-                Dim telemetryOk As Boolean =
                     Await Task.Run(
-                        Function() As Boolean
-
-                            Return active.TryReadTelemetryBatch(
+                        Function()
+                            Return active.ReadTelemetryBatch(
                                 CByte(requestedRecords),
-                                token,
-                                batch,
-                                telemetryError)
-
+                                token)
                         End Function,
                         token)
-
-
-                If Not telemetryOk OrElse
-                   batch Is Nothing Then
-
-                    failedCycles += 1
-
-                    statusLabel.Text =
-                        "LINK RECOVERY | " &
-                        active.GetLinkStatusText()
-
-                    If Not String.IsNullOrWhiteSpace(
-                        telemetryError
-                    ) Then
-
-                        AppendConsole(
-                            "TELEMETRY MISSED: " &
-                            telemetryError
-                        )
-
-                    End If
-
-                    ' Do not terminate the polling loop.
-                    ' The master has already reduced the adaptive batch.
-                    Await Task.Delay(
-                        Math.Min(
-                            1000,
-                            150 + failedCycles * 100
-                        ),
-                        token
-                    )
-
-                    Continue While
-
-                End If
 
                 Dim lastSequence As UInteger = 0UI
 
@@ -270,39 +220,16 @@ Partial Public Class ErmisMonitorForm
                     Dim low As UShort =
                         CUShort(lastSequence And &HFFFFUI)
 
-                    Dim ackError As String =
-                        ""
+                    Await Task.Run(
+                        Sub()
+                            active.WriteMultipleRegisters(
+                                AckSequenceRegister,
+                                New UShort() {high, low},
+                                token)
+                        End Sub,
+                        token)
 
-                    Dim ackOk As Boolean =
-                        Await Task.Run(
-                            Function() As Boolean
-
-                                Return active.TryWriteMultipleRegisters(
-                                    AckSequenceRegister,
-                                    New UShort() {high, low},
-                                    token,
-                                    ackError)
-
-                            End Function,
-                            token)
-
-
-                    If ackOk Then
-
-                        _lastAckedSequence =
-                            lastSequence
-
-                    Else
-
-                        ' Do not crash and do not advance the local ACK.
-                        ' The same sequence can be acknowledged again on
-                        ' the next successful cycle.
-                        AppendConsole(
-                            "ACK MISSED - retry next cycle: " &
-                            ackError
-                        )
-
-                    End If
+                    _lastAckedSequence = lastSequence
 
                 End If
 
@@ -316,18 +243,8 @@ Partial Public Class ErmisMonitorForm
                 ' background Modbus reader.
                 ' ============================================================
 
-                ' LOW PRIORITY SPECTRUM:
-                ' do not compete with telemetry while FIFO has records.
                 If _spectrogramRequested AndAlso
-                   _missionControl IsNot Nothing AndAlso
-                   _lastKnownFifo = 0US AndAlso
-                   (
-                       DateTime.UtcNow -
-                       _lastSpectrumReadTime
-                   ).TotalMilliseconds >= SpectrumReadIntervalMs Then
-
-                    _lastSpectrumReadTime =
-                        DateTime.UtcNow
+                   _missionControl IsNot Nothing Then
 
                     Try
 
@@ -481,12 +398,24 @@ Partial Public Class ErmisMonitorForm
             End If
 
             Try
+                Dim delayMs As Integer
 
-                ' The RobustModbusRtuMaster owns the complete transaction timing.
-                Await Task.Delay(
-                    10,
-                    token
-                )
+                If success Then
+
+                    If _lastKnownFifo >= CatchUpFifoThreshold Then
+                        delayMs = 5
+                    Else
+                        delayMs = 150
+                    End If
+
+                Else
+
+                    ' Fast recovery, but do not flood the LoRa link.
+                    delayMs = Math.Min(1000, 150 + failedCycles * 100)
+
+                End If
+
+                Await Task.Delay(delayMs, token)
 
             Catch ex As OperationCanceledException
 
@@ -972,7 +901,6 @@ Partial Public Class ErmisMonitorForm
             _spectrogramRequested = True
             _lastSpectrumFrame = 0UI
             _spectrumRxCounter = 0UI
-            _lastSpectrumReadTime = DateTime.MinValue
 
             spectrumStatusLabel.Text =
                 "WAITING FOR SPECTRUM..."

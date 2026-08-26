@@ -11,16 +11,10 @@ Imports System.Threading
 Friend NotInheritable Class RobustModbusRtuMaster
     Implements IDisposable
 
-    Friend Enum LinkConnectionState
-        Connecting = 0
-        Connected = 1
-        Reconnecting = 2
-    End Enum
-
     Private Const CompactBatchFunction As Byte = &H42
     Private Const ProtocolVersionV1 As Byte = 1
     Private Const ProtocolVersionV2 As Byte = 2
-    Private Const MaxBatchRecords As Integer = 10
+    Private Const MaxBatchRecords As Integer = 5
 
     Private Const MaxAttempts As Integer = 3
 
@@ -35,38 +29,7 @@ Friend NotInheritable Class RobustModbusRtuMaster
     Private _successfulTransactions As Long
     Private _failedTransactions As Long
     Private _retryCount As Long
-    Private _adaptiveBatch As Integer = 5
-
-    ' ============================================================
-    ' DYNAMIC LINK SYNCHRONIZATION
-    '
-    ' Exactly one Modbus transaction is allowed at a time because
-    ' every public transaction is serialized by _sync.
-    '
-    ' The master starts/restarts slowly and speeds up only after
-    ' confirmed successful request/response cycles.
-    ' ============================================================
-
-    Private _connectionState As LinkConnectionState =
-        LinkConnectionState.Connecting
-
-    Private _transactionIntervalMs As Integer =
-        2000
-
-    Private _lastTransactionFinishedUtc As DateTime =
-        DateTime.MinValue
-
-    Private _goodSyncCycles As Integer =
-        0
-
-    Private _badSyncCycles As Integer =
-        0
-
-    Private Const ConnectIntervalMs As Integer = 2000
-    Private Const MinimumConnectedIntervalMs As Integer = 200
-    Private Const MaximumConnectedIntervalMs As Integer = 2000
-    Private Const AdaptationDeadbandPercent As Double = 0.2R
-
+    Private _adaptiveBatch As Integer = 3
 
     Public Sub New(portName As String, baud As Integer, slaveId As Byte)
 
@@ -74,7 +37,7 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
         _port = New SerialPort(portName, baud, Parity.None, 8, StopBits.One) With {
             .Handshake = Handshake.None,
-            .ReadTimeout = 100,
+            .ReadTimeout = 250,
             .WriteTimeout = 3000,
             .DtrEnable = False,
             .RtsEnable = False,
@@ -83,194 +46,6 @@ Friend NotInheritable Class RobustModbusRtuMaster
         }
 
     End Sub
-
-    Public ReadOnly Property ConnectionState As LinkConnectionState
-        Get
-            SyncLock _sync
-                Return _connectionState
-            End SyncLock
-        End Get
-    End Property
-
-
-    Public ReadOnly Property TransactionIntervalMs As Integer
-        Get
-            SyncLock _sync
-                Return _transactionIntervalMs
-            End SyncLock
-        End Get
-    End Property
-
-
-    Private Sub WaitForTransactionSlot(
-        cancellationToken As CancellationToken
-    )
-
-        If _lastTransactionFinishedUtc =
-           DateTime.MinValue Then
-            Return
-        End If
-
-        Dim elapsedMs As Double =
-            (
-                DateTime.UtcNow -
-                _lastTransactionFinishedUtc
-            ).TotalMilliseconds
-
-        Dim remainingMs As Integer =
-            CInt(
-                Math.Ceiling(
-                    _transactionIntervalMs -
-                    elapsedMs
-                )
-            )
-
-        If remainingMs > 0 Then
-            WaitWithCancellation(
-                remainingMs,
-                cancellationToken
-            )
-        End If
-
-    End Sub
-
-
-    Private Sub MarkTransactionFinished()
-
-        _lastTransactionFinishedUtc =
-            DateTime.UtcNow
-
-    End Sub
-
-
-    Private Sub RegisterLinkCycleSuccess(
-        responseTimeMs As Integer
-    )
-
-        _badSyncCycles = 0
-        _goodSyncCycles += 1
-
-        If responseTimeMs < 0 Then
-            responseTimeMs = 0
-        End If
-
-        If _connectionState = LinkConnectionState.Connecting OrElse
-           _connectionState = LinkConnectionState.Reconnecting Then
-
-            _connectionState =
-                LinkConnectionState.Connected
-
-        End If
-
-        Dim lowerLimitMs As Double =
-            CDbl(_transactionIntervalMs) *
-            (1.0R - AdaptationDeadbandPercent)
-
-        Dim upperLimitMs As Double =
-            CDbl(_transactionIntervalMs) *
-            (1.0R + AdaptationDeadbandPercent)
-
-        If CDbl(responseTimeMs) < lowerLimitMs Then
-
-            Select Case _transactionIntervalMs
-
-                Case Is > 1600
-                    _transactionIntervalMs = 1600
-                Case Is > 1200
-                    _transactionIntervalMs = 1200
-                Case Is > 1000
-                    _transactionIntervalMs = 1000
-                Case Is > 800
-                    _transactionIntervalMs = 800
-                Case Is > 650
-                    _transactionIntervalMs = 650
-                Case Is > 500
-                    _transactionIntervalMs = 500
-                Case Is > 400
-                    _transactionIntervalMs = 400
-                Case Is > 300
-                    _transactionIntervalMs = 300
-                Case Is > 250
-                    _transactionIntervalMs = 250
-                Case Is > MinimumConnectedIntervalMs
-                    _transactionIntervalMs =
-                        MinimumConnectedIntervalMs
-
-            End Select
-
-        ElseIf CDbl(responseTimeMs) > upperLimitMs Then
-
-            Select Case _transactionIntervalMs
-
-                Case Is < 250
-                    _transactionIntervalMs = 250
-                Case Is < 300
-                    _transactionIntervalMs = 300
-                Case Is < 400
-                    _transactionIntervalMs = 400
-                Case Is < 500
-                    _transactionIntervalMs = 500
-                Case Is < 650
-                    _transactionIntervalMs = 650
-                Case Is < 800
-                    _transactionIntervalMs = 800
-                Case Is < 1000
-                    _transactionIntervalMs = 1000
-                Case Is < 1200
-                    _transactionIntervalMs = 1200
-                Case Is < 1600
-                    _transactionIntervalMs = 1600
-                Case Else
-                    _transactionIntervalMs =
-                        MaximumConnectedIntervalMs
-
-            End Select
-
-        End If
-
-        If _transactionIntervalMs < MinimumConnectedIntervalMs Then
-            _transactionIntervalMs =
-                MinimumConnectedIntervalMs
-        End If
-
-        If _transactionIntervalMs > MaximumConnectedIntervalMs Then
-            _transactionIntervalMs =
-                MaximumConnectedIntervalMs
-        End If
-
-    End Sub
-
-
-    Private Sub RegisterLinkCycleFailure()
-
-        _goodSyncCycles = 0
-        _badSyncCycles += 1
-
-        _transactionIntervalMs =
-            Math.Min(
-                MaximumConnectedIntervalMs,
-                Math.Max(
-                    500,
-                    _transactionIntervalMs + 300
-                )
-            )
-
-        If _badSyncCycles >= 2 Then
-            _adaptiveBatch = 1
-        End If
-
-        If _badSyncCycles >= 3 Then
-
-            _connectionState =
-                LinkConnectionState.Reconnecting
-
-            _transactionIntervalMs =
-                ConnectIntervalMs
-
-        End If
-
-    End Sub
-
 
     Public Sub Open()
 
@@ -281,19 +56,6 @@ Friend NotInheritable Class RobustModbusRtuMaster
             End If
 
             _port.Open()
-
-            _connectionState =
-                LinkConnectionState.Connecting
-
-            _transactionIntervalMs =
-                ConnectIntervalMs
-
-            _lastTransactionFinishedUtc =
-                DateTime.MinValue
-
-            _goodSyncCycles = 0
-            _badSyncCycles = 0
-
             Thread.Sleep(300)
             DrainInput(100)
 
@@ -339,73 +101,39 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
     Public Function GetLinkStatusText() As String
 
-        SyncLock _sync
-
-            Dim stateText As String =
-                _connectionState.ToString().ToUpperInvariant()
-
-            Return stateText &
-                   " | Delay=" &
-                   _transactionIntervalMs.ToString() &
-                   "ms" &
-                   " | Window=±20%" &
-                   " | Batch=" &
-                   _adaptiveBatch.ToString() &
-                   " | RTT=" &
-                   _lastRttMs.ToString() &
-                   "ms" &
-                   " | Avg=" &
-                   _averageRttMs.ToString("F0") &
-                   "ms" &
-                   " | Success=" &
-                   SuccessRatePercent.ToString("F1") &
-                   "%" &
-                   " | Retries=" &
-                   _retryCount.ToString()
-
-        End SyncLock
+        Return "Batch=" & _adaptiveBatch.ToString() &
+               " RTT=" & _lastRttMs.ToString() & "ms" &
+               " Avg=" & _averageRttMs.ToString("F0") & "ms" &
+               " Success=" & SuccessRatePercent.ToString("F1") & "%" &
+               " Retries=" & _retryCount.ToString()
 
     End Function
 
-
     Public Function ReadTelemetryBatch(
         requestedRecords As Byte,
-        cancellationToken As CancellationToken
-    ) As TelemetryBatchResponse
+        cancellationToken As CancellationToken) As TelemetryBatchResponse
 
-        Dim safeRequested As Integer =
-            Math.Max(
-                1,
-                Math.Min(
-                    CInt(requestedRecords),
-                    MaxBatchRecords
-                )
-            )
+        If requestedRecords < 1 OrElse requestedRecords > MaxBatchRecords Then
+            Throw New ArgumentOutOfRangeException(
+                NameOf(requestedRecords),
+                "Το compact batch επιτρέπει 1 έως 5 records.")
+        End If
 
         SyncLock _sync
 
             Dim maxRequested As Integer =
-                Math.Min(
-                    safeRequested,
-                    _adaptiveBatch
-                )
+                Math.Min(CInt(requestedRecords), _adaptiveBatch)
 
-            Dim lastError As Exception =
-                Nothing
+            Dim lastError As Exception = Nothing
 
             For attempt As Integer = 1 To MaxAttempts
 
                 cancellationToken.ThrowIfCancellationRequested()
 
-                Dim thisRequest As Integer =
-                    maxRequested
+                Dim thisRequest As Integer = maxRequested
 
                 If attempt = 2 Then
-                    thisRequest =
-                        Math.Max(
-                            1,
-                            maxRequested \ 2
-                        )
+                    thisRequest = Math.Max(1, maxRequested \ 2)
                 ElseIf attempt >= 3 Then
                     thisRequest = 1
                 End If
@@ -414,94 +142,47 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
                 request(0) = _slaveId
                 request(1) = CompactBatchFunction
-
-                PutU16(
-                    request,
-                    2,
-                    CUShort(thisRequest)
-                )
-
-                PutU16(
-                    request,
-                    4,
-                    0US
-                )
-
+                PutU16(request, 2, CUShort(thisRequest))
+                PutU16(request, 4, 0US)
                 AppendCrc(request)
 
                 Try
-
+                    ' Important:
+                    ' Drain only stale bytes BEFORE a brand-new transaction.
+                    ' Do not wait for a long "quiet" period on LoRa.
                     If attempt = 1 Then
                         DrainInput(20)
                     End If
 
                     cancellationToken.ThrowIfCancellationRequested()
 
-                    WaitForTransactionSlot(
-                        cancellationToken
-                    )
+                    Dim timer As Stopwatch = Stopwatch.StartNew()
 
-                    Dim transactionTimer As Stopwatch =
-                        Stopwatch.StartNew()
+                    _port.Write(request, 0, request.Length)
 
-                    _port.Write(
-                        request,
-                        0,
-                        request.Length
-                    )
-
-                    Dim timeoutMs As Integer =
-                        GetTimeoutMs(attempt)
+                    Dim timeoutMs As Integer = GetTimeoutMs(attempt)
 
                     Dim frame As Byte() =
-                        ReadCompactFrame(
-                            timeoutMs,
-                            cancellationToken
-                        )
+                        ReadCompactFrame(timeoutMs, cancellationToken)
 
-                    transactionTimer.Stop()
+                    timer.Stop()
 
-                    Dim rttMs As Integer =
-                        CInt(
-                            transactionTimer.ElapsedMilliseconds
-                        )
-
-                    RegisterSuccess(
-                        rttMs,
-                        attempt
-                    )
-
-                    RegisterLinkCycleSuccess(
-                        rttMs
-                    )
-
-                    MarkTransactionFinished()
+                    RegisterSuccess(CInt(timer.ElapsedMilliseconds), attempt)
 
                     Return DecodeCompactFrame(frame)
 
                 Catch ex As OperationCanceledException
-
                     Throw
 
                 Catch ex As Exception
-
                     lastError = ex
 
                     RegisterAttemptFailure()
-                    RegisterLinkCycleFailure()
-                    MarkTransactionFinished()
 
                     If attempt < MaxAttempts Then
-
                         _retryCount += 1
-
-                        WaitWithCancellation(
-                            80 * attempt,
-                            cancellationToken
-                        )
-
+                        WaitWithCancellation(80 * attempt, cancellationToken)
                     End If
-
                 End Try
 
             Next
@@ -510,67 +191,19 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
             Throw New IOException(
                 "Compact LoRa batch απέτυχε μετά από retries.",
-                lastError
-            )
+                lastError)
 
         End SyncLock
 
     End Function
 
-
-    ' ============================================================
-    ' CRASH-PROOF TELEMETRY READ
-    '
-    ' Never lets a temporary LoRa/serial failure escape into the
-    ' WinForms polling Task. The normal ReadTelemetryBatch method
-    ' remains available for callers that explicitly want exceptions.
-    ' ============================================================
-
-    Public Function TryReadTelemetryBatch(
-        requestedRecords As Byte,
-        cancellationToken As CancellationToken,
-        ByRef response As TelemetryBatchResponse,
-        ByRef errorMessage As String
-    ) As Boolean
-
-        response = Nothing
-        errorMessage = ""
-
-        Try
-
-            response =
-                ReadTelemetryBatch(
-                    requestedRecords,
-                    cancellationToken)
-
-            Return True
-
-        Catch ex As OperationCanceledException
-
-            Throw
-
-        Catch ex As Exception
-
-            errorMessage =
-                ex.Message
-
-            Return False
-
-        End Try
-
-    End Function
-
-
     Public Function ReadHoldingRegisters(
         startAddress As UShort,
         count As UShort,
-        cancellationToken As CancellationToken
-    ) As UShort()
+        cancellationToken As CancellationToken) As UShort()
 
         If count < 1US OrElse count > 125US Then
-            Throw New ArgumentOutOfRangeException(
-                NameOf(count)
-            )
+            Throw New ArgumentOutOfRangeException(NameOf(count))
         End If
 
         SyncLock _sync
@@ -579,46 +212,22 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
             request(0) = _slaveId
             request(1) = &H3
-
-            PutU16(
-                request,
-                2,
-                startAddress
-            )
-
-            PutU16(
-                request,
-                4,
-                count
-            )
-
+            PutU16(request, 2, startAddress)
+            PutU16(request, 4, count)
             AppendCrc(request)
 
-            Dim lastError As Exception =
-                Nothing
+            Dim lastError As Exception = Nothing
 
             For attempt As Integer = 1 To MaxAttempts
 
                 cancellationToken.ThrowIfCancellationRequested()
 
                 Try
-
                     If attempt = 1 Then
                         DrainInput(20)
                     End If
 
-                    WaitForTransactionSlot(
-                        cancellationToken
-                    )
-
-                    Dim transactionTimer As Stopwatch =
-                        Stopwatch.StartNew()
-
-                    _port.Write(
-                        request,
-                        0,
-                        request.Length
-                    )
+                    _port.Write(request, 0, request.Length)
 
                     Dim expectedLength As Integer =
                         5 + CInt(count) * 2
@@ -628,275 +237,128 @@ Friend NotInheritable Class RobustModbusRtuMaster
                             &H3,
                             expectedLength,
                             GetTimeoutMs(attempt),
-                            cancellationToken
-                        )
+                            cancellationToken)
 
                     If response.Length <> expectedLength Then
                         Throw New IOException(
-                            "Λάθος μήκος FC03 response."
-                        )
+                            "Λάθος μήκος FC03 response.")
                     End If
 
                     If response(2) <> CByte(count * 2US) Then
                         Throw New IOException(
-                            "Λάθος byte count FC03."
-                        )
+                            "Λάθος byte count FC03.")
                     End If
 
                     Dim result(CInt(count) - 1) As UShort
 
                     For i As Integer = 0 To result.Length - 1
-
                         result(i) =
                             GetU16(
                                 response,
-                                3 + i * 2
-                            )
-
+                                3 + i * 2)
                     Next
-
-                    transactionTimer.Stop()
-
-                    Dim rttMs As Integer =
-                        CInt(
-                            transactionTimer.ElapsedMilliseconds
-                        )
-
-                    RegisterLinkCycleSuccess(
-                        rttMs
-                    )
-
-                    MarkTransactionFinished()
 
                     Return result
 
                 Catch ex As OperationCanceledException
-
                     Throw
 
                 Catch ex As Exception
-
-                    RegisterLinkCycleFailure()
-                    MarkTransactionFinished()
-
                     lastError = ex
 
                     If attempt < MaxAttempts Then
-
                         _retryCount += 1
-
                         WaitWithCancellation(
                             80 * attempt,
-                            cancellationToken
-                        )
-
+                            cancellationToken)
                     End If
-
                 End Try
 
             Next
 
             Throw New IOException(
                 "FC03 read απέτυχε μετά από retries.",
-                lastError
-            )
+                lastError)
 
         End SyncLock
 
     End Function
 
-
     Public Sub WriteMultipleRegisters(
         startAddress As UShort,
         values As UShort(),
-        cancellationToken As CancellationToken
-    )
+        cancellationToken As CancellationToken)
 
         If values Is Nothing Then
-            Throw New ArgumentNullException(
-                NameOf(values)
-            )
+            Throw New ArgumentNullException(NameOf(values))
         End If
 
         If values.Length < 1 OrElse values.Length > 123 Then
-            Throw New ArgumentOutOfRangeException(
-                NameOf(values)
-            )
+            Throw New ArgumentOutOfRangeException(NameOf(values))
         End If
 
         SyncLock _sync
 
-            Dim dataBytes As Integer =
-                values.Length * 2
-
+            Dim dataBytes As Integer = values.Length * 2
             Dim request(9 + dataBytes - 1) As Byte
 
             request(0) = _slaveId
             request(1) = &H10
-
-            PutU16(
-                request,
-                2,
-                startAddress
-            )
-
-            PutU16(
-                request,
-                4,
-                CUShort(values.Length)
-            )
-
-            request(6) =
-                CByte(dataBytes)
+            PutU16(request, 2, startAddress)
+            PutU16(request, 4, CUShort(values.Length))
+            request(6) = CByte(dataBytes)
 
             For i As Integer = 0 To values.Length - 1
-
-                PutU16(
-                    request,
-                    7 + i * 2,
-                    values(i)
-                )
-
+                PutU16(request, 7 + i * 2, values(i))
             Next
 
             AppendCrc(request)
 
-            Dim lastError As Exception =
-                Nothing
+            Dim lastError As Exception = Nothing
 
             For attempt As Integer = 1 To MaxAttempts
 
                 cancellationToken.ThrowIfCancellationRequested()
 
                 Try
-
                     If attempt = 1 Then
                         DrainInput(20)
                     End If
 
-                    WaitForTransactionSlot(
-                        cancellationToken
-                    )
-
-                    Dim transactionTimer As Stopwatch =
-                        Stopwatch.StartNew()
-
-                    _port.Write(
-                        request,
-                        0,
-                        request.Length
-                    )
+                    _port.Write(request, 0, request.Length)
 
                     Dim response As Byte() =
-                        ReadFixedFrame(
-                            &H10,
-                            8,
-                            GetTimeoutMs(attempt),
-                            cancellationToken
-                        )
+                        ReadFixedFrame(&H10, 8, GetTimeoutMs(attempt), cancellationToken)
 
                     If GetU16(response, 2) <> startAddress OrElse
                        GetU16(response, 4) <> CUShort(values.Length) Then
 
-                        Throw New IOException(
-                            "Λάθος FC16 echo."
-                        )
-
+                        Throw New IOException("Λάθος FC16 echo.")
                     End If
-
-                    transactionTimer.Stop()
-
-                    Dim rttMs As Integer =
-                        CInt(
-                            transactionTimer.ElapsedMilliseconds
-                        )
-
-                    RegisterLinkCycleSuccess(
-                        rttMs
-                    )
-
-                    MarkTransactionFinished()
 
                     Return
 
                 Catch ex As OperationCanceledException
-
                     Throw
 
                 Catch ex As Exception
-
-                    RegisterLinkCycleFailure()
-                    MarkTransactionFinished()
-
                     lastError = ex
 
                     If attempt < MaxAttempts Then
-
                         _retryCount += 1
-
-                        WaitWithCancellation(
-                            80 * attempt,
-                            cancellationToken
-                        )
-
+                        WaitWithCancellation(80 * attempt, cancellationToken)
                     End If
-
                 End Try
 
             Next
 
             Throw New IOException(
                 "FC16 ACK απέτυχε μετά από retries.",
-                lastError
-            )
+                lastError)
 
         End SyncLock
 
     End Sub
-
-
-    ' ============================================================
-    ' NON-FATAL FC16 WRITE
-    '
-    ' Used by automatic telemetry ACK.
-    ' A temporary LoRa loss must never terminate the SCADA poll task.
-    ' ============================================================
-
-    Public Function TryWriteMultipleRegisters(
-        startAddress As UShort,
-        values As UShort(),
-        cancellationToken As CancellationToken,
-        ByRef errorMessage As String
-    ) As Boolean
-
-        errorMessage = ""
-
-        Try
-
-            WriteMultipleRegisters(
-                startAddress,
-                values,
-                cancellationToken)
-
-            Return True
-
-        Catch ex As OperationCanceledException
-
-            Throw
-
-        Catch ex As Exception
-
-            errorMessage = ex.Message
-
-            ' A complete failed write is strong evidence of a weak link.
-            RegisterTransactionFailure()
-
-            Return False
-
-        End Try
-
-    End Function
-
 
     Private Function DecodeCompactFrame(frame As Byte()) As TelemetryBatchResponse
 
@@ -1321,25 +783,19 @@ Friend NotInheritable Class RobustModbusRtuMaster
             _successStreak = Math.Min(_successStreak, 2)
         End If
 
-        ' Recovery must be conservative after a weak-link period.
-        '
-        ' 1 -> 3 only after 12 clean transactions
-        ' 3 -> 5 after another 10
-        ' 5 -> 7 after another 10
-        ' 7 -> 10 after another 10
-        Dim requiredSuccesses As Integer =
-            If(_adaptiveBatch <= 1, 12, 10)
-
-        If _successStreak >= requiredSuccesses Then
+        ' Slow upgrade, fast fallback.
+        ' LoRa-safe cap: never request more than 5 telemetry records
+        ' while live spectrogram traffic shares the same link.
+        If _successStreak >= 10 Then
 
             If _adaptiveBatch < 3 Then
+
                 _adaptiveBatch = 3
-            ElseIf _adaptiveBatch < 5 Then
-                _adaptiveBatch = 5
-            ElseIf _adaptiveBatch < 7 Then
-                _adaptiveBatch = 7
-            ElseIf _adaptiveBatch < 10 Then
-                _adaptiveBatch = 10
+
+            ElseIf _adaptiveBatch < MaxBatchRecords Then
+
+                _adaptiveBatch = MaxBatchRecords
+
             End If
 
             _successStreak = 0
@@ -1353,32 +809,18 @@ Friend NotInheritable Class RobustModbusRtuMaster
         _failureStreak += 1
         _successStreak = 0
 
-        ' A weak LoRa period must not stay at a large batch.
-        '
-        ' First failure:
-        '   10 -> 5
-        '   7  -> 3
-        '   5  -> 3
-        '
-        ' Second consecutive failure:
-        '   immediately -> 1
-        '
-        ' This lets the link recover with the smallest possible frame.
-        If _failureStreak >= 2 Then
+        If _adaptiveBatch >= 5 Then
+
+            _adaptiveBatch = 3
+
+        ElseIf _adaptiveBatch >= 3 Then
 
             _adaptiveBatch = 1
-            Return
 
-        End If
-
-        If _adaptiveBatch >= 10 Then
-            _adaptiveBatch = 5
-        ElseIf _adaptiveBatch >= 7 Then
-            _adaptiveBatch = 3
-        ElseIf _adaptiveBatch >= 5 Then
-            _adaptiveBatch = 3
         Else
+
             _adaptiveBatch = 1
+
         End If
 
     End Sub
@@ -1393,6 +835,7 @@ Friend NotInheritable Class RobustModbusRtuMaster
 
     Private Function GetTimeoutMs(attempt As Integer) As Integer
 
+        ' Compact packets are much smaller, so recovery can be fast.
         If attempt <= 1 Then
             Return 2500
         End If
